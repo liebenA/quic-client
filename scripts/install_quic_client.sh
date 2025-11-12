@@ -1,132 +1,171 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ---- Safety Check ----
-if [[ "$EUID" -eq 0 ]]; then
-  echo "Please do NOT run this script as root."
+# ==== 0) Exigence: root uniquement ====
+if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
+  echo "[ERROR] This installer must be run as root (sudo)."
   exit 1
 fi
 
+# ==== 1) Détection OS & préparations ====
+source /etc/os-release || true
+ID_LIKE_LOWER="$(echo "${ID_LIKE:-}" | tr '[:upper:]' '[:lower:]')"
+ID_LOWER="$(echo "${ID:-}" | tr '[:upper:]' '[:lower:]')"
 
-# ----------------------------
-# CONFIGURATION DE BASE
-# ----------------------------
+PKG=""
+INSTALL_CMD=""
+CRON_SERVICE=""
+case "${ID_LOWER}:${ID_LIKE_LOWER}" in
+  *"debian"*:*|*"ubuntu"*:*|*:"debian"*|*:"ubuntu"*)
+    PKG="apt-get"
+    INSTALL_CMD="apt-get update -y && apt-get install -y"
+    CRON_SERVICE="cron"
+    ;;
+  *"rhel"*:*|*"centos"*:*|*"rocky"*:*|*"almalinux"*:*|*"amzn"*:*|*:"rhel"*|*:"fedora"*)
+    # dnf ou yum
+    if command -v dnf >/dev/null 2>&1; then
+      PKG="dnf"
+      INSTALL_CMD="dnf install -y"
+    else
+      PKG="yum"
+      INSTALL_CMD="yum install -y"
+    fi
+    CRON_SERVICE="crond"
+    ;;
+  *"fedora"*:*|*"fedora":*)
+    PKG="dnf"
+    INSTALL_CMD="dnf install -y"
+    CRON_SERVICE="crond"
+    ;;
+  *"arch"*:*|*"manjaro"*:*|*:"arch"*)
+    PKG="pacman"
+    INSTALL_CMD="pacman -Sy --noconfirm"
+    CRON_SERVICE="cronie"
+    ;;
+  *"suse"*:*|*"opensuse"*:*|*:"suse"*|*:"opensuse"*)
+    PKG="zypper"
+    INSTALL_CMD="zypper install -y"
+    CRON_SERVICE="cron"
+    ;;
+  *)
+    echo "[WARN] Unknown distro (${ID_LOWER}); attempting generic paths."
+    # Dernier recours : essayer apt, sinon dnf, sinon pacman
+    if command -v apt-get >/dev/null 2>&1; then
+      PKG="apt-get"
+      INSTALL_CMD="apt-get update -y && apt-get install -y"
+      CRON_SERVICE="cron"
+    elif command -v dnf >/dev/null 2>&1; then
+      PKG="dnf"
+      INSTALL_CMD="dnf install -y"
+      CRON_SERVICE="crond"
+    elif command -v yum >/dev/null 2>&1; then
+      PKG="yum"
+      INSTALL_CMD="yum install -y"
+      CRON_SERVICE="crond"
+    elif command -v pacman >/dev/null 2>&1; then
+      PKG="pacman"
+      INSTALL_CMD="pacman -Sy --noconfirm"
+      CRON_SERVICE="cronie"
+    else
+      echo "[ERROR] No supported package manager found."
+      exit 1
+    fi
+    ;;
+esac
+
+# ==== 2) Variables standard ====
 REPO_URL="https://github.com/liebenA/quic-client"
-INSTALL_PREFIX="${INSTALL_PREFIX:-$HOME/.local}"
-BIN_DIR="${BIN_DIR:-$(go env GOPATH 2>/dev/null || echo $HOME/go)/bin}"
-SCRIPTS_DIR="$INSTALL_PREFIX/bin"
-LOG_DIR="$HOME/.quic-client/logs"
-REPO_DIR="$HOME/quic-client"
+REPO_DIR="/opt/quic-client"
+BIN_TARGET="/usr/local/bin/quic-client"
+BATCH_SCRIPT="/usr/local/bin/quic-client-batch.sh"
+LOG_DIR="/var/log/quic-client"
 
-# ----------------------------
-# FONCTIONS UTILITAIRES
-# ----------------------------
-GREEN='\033[0;32m'
-RED='\033[0;31m'
-YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
+# ==== 3) Installer git, go, cron selon la distro ====
+echo "[INFO] Installing prerequisites with ${PKG} ..."
+case "${PKG}" in
+  apt-get)
+    bash -c "${INSTALL_CMD} git golang cron"
+    ;;
+  dnf|yum)
+    bash -c "${INSTALL_CMD} git golang cronie"
+    ;;
+  pacman)
+    bash -c "${INSTALL_CMD} git go cronie"
+    ;;
+  zypper)
+    bash -c "${INSTALL_CMD} git go cron"
+    ;;
+esac
 
-info()    { echo -e "${GREEN}[INFO]${NC} $*"; }
-warn()    { echo -e "${YELLOW}[WARN]${NC} $*"; }
-error()   { echo -e "${RED}[ERROR]${NC} $*" >&2; exit 1; }
+# Vérifs binaires
+command -v git >/dev/null 2>&1 || { echo "[ERROR] git not found after install"; exit 1; }
+command -v go  >/dev/null 2>&1 || { echo "[ERROR] go not found after install"; exit 1; }
 
-# ----------------------------
-# 0) CONTRÔLES PRÉALABLES
-# ----------------------------
-info "Checking prerequisites..."
-
-command -v git >/dev/null 2>&1 || error "git not found in PATH. Please install git."
-command -v go  >/dev/null 2>&1 || error "go not found in PATH. Please install Go (https://go.dev/doc/install)."
-
-info "Git version: $(git --version)"
-info "Go version:  $(go version)"
-
-# ----------------------------
-# 1) CLONAGE OU MISE À JOUR
-# ----------------------------
-if [[ ! -d "$REPO_DIR" ]]; then
-  info "Cloning repository from $REPO_URL..."
-  git clone "$REPO_URL" "$REPO_DIR" || error "Failed to clone repository."
+# ==== 4) Activer/ouvrir le service cron ====
+echo "[INFO] Enabling and starting cron service: ${CRON_SERVICE}"
+if command -v systemctl >/dev/null 2>&1; then
+  systemctl enable "${CRON_SERVICE}" --now || true
+  systemctl start "${CRON_SERVICE}" || true
 else
-  info "Repository already exists. Pulling latest changes..."
-  git -C "$REPO_DIR" pull --ff-only || warn "Unable to update repository, continuing with existing files."
+  # systèmes sans systemd : best-effort
+  service "${CRON_SERVICE}" start || true
 fi
 
-cd "$REPO_DIR" || error "Failed to enter repository directory."
-
-# ----------------------------
-# 2) BUILD DU CLIENT
-# ----------------------------
-info "Running Go dependency tidy..."
-if ! go mod tidy; then
-  error "go mod tidy failed."
-fi
-
-info "Building the project..."
-if ! go build ./...; then
-  error "Build failed. Check for syntax or module errors."
-fi
-
-info "Installing the binary..."
-if ! go install ./...; then
-  error "Installation failed. Make sure GOPATH is correctly configured."
-fi
-
-# Vérification de l’installation
-if [[ ! -x "$BIN_DIR/quic-client" ]]; then
-  error "Binary not found at $BIN_DIR/quic-client after installation."
-fi
-
-info "Binary successfully installed at: $BIN_DIR/quic-client"
-
-# ----------------------------
-# 3) INSTALLATION DES SCRIPTS
-# ----------------------------
-info "Preparing directories..."
-mkdir -p "$SCRIPTS_DIR" "$LOG_DIR" || error "Failed to create directories."
-
-if [[ -f "scripts/quic-client-batch.sh" ]]; then
-  install -m 0755 scripts/quic-client-batch.sh "$SCRIPTS_DIR/quic-client-batch.sh"
-  info "Batch script deployed to: $SCRIPTS_DIR/quic-client-batch.sh"
+# ==== 5) Récupérer / mettre à jour le dépôt ====
+echo "[INFO] Fetching repository to ${REPO_DIR}"
+if [[ ! -d "${REPO_DIR}" ]]; then
+  git clone "${REPO_URL}" "${REPO_DIR}"
 else
-  warn "Batch script not found in repository (scripts/quic-client-batch.sh)."
+  git -C "${REPO_DIR}" pull --ff-only || echo "[WARN] git pull failed; using existing sources"
 fi
+cd "${REPO_DIR}"
 
-# ----------------------------
-# 4) PREMIER TEST
-# ----------------------------
-info "Running first batch test..."
-if ! "$SCRIPTS_DIR/quic-client-batch.sh"; then
-  warn "First test encountered an error — please check logs at $LOG_DIR"
+# ==== 6) Build & install ====
+echo "[INFO] go mod tidy ..."
+go mod tidy
+
+echo "[INFO] go build ..."
+go build ./...
+
+echo "[INFO] go install ..."
+go install ./...
+
+# Récupérer le binaire compilé (GOPATH)
+GOBIN_DEFAULT="$(go env GOPATH 2>/dev/null || echo /root/go)/bin/quic-client"
+if [[ -x "${GOBIN_DEFAULT}" ]]; then
+  install -m 0755 "${GOBIN_DEFAULT}" "${BIN_TARGET}"
 else
-  info "Initial test completed successfully."
+  # Fallback: si go a produit le binaire courant
+  if [[ -x "${REPO_DIR}/quic-client" ]]; then
+    install -m 0755 "${REPO_DIR}/quic-client" "${BIN_TARGET}"
+  fi
 fi
 
-# ----------------------------
-# 5) CRONJOB CONFIGURATION
-# ----------------------------
-info "Configuring cron job (every 2 hours)..."
-#CRON_LINE='0 */2 * * * /bin/bash -lc "~/.local/bin/quic-client-batch.sh"'
-CRON_LINE='0 */2 * * * bash -lc "/home/$USER/.local/bin/quic-client-batch.sh"'
-( crontab -l 2>/dev/null | grep -v 'quic-client-batch.sh' ; echo "$CRON_LINE" ) | crontab -
+if [[ ! -x "${BIN_TARGET}" ]]; then
+  echo "[ERROR] Unable to place quic-client to ${BIN_TARGET}"
+  exit 1
+fi
+echo "[INFO] Binary installed at ${BIN_TARGET}"
 
-# Supprimer les anciennes lignes similaires
+# ==== 7) Installer le batch script & logs ====
+mkdir -p "${LOG_DIR}"
+install -m 0755 "${REPO_DIR}/scripts/quic-client-batch.sh" "${BATCH_SCRIPT}"
+
+# ==== 8) Premier run (avec logs propres) ====
+echo "[INFO] Running initial batch test ..."
+if ! "${BATCH_SCRIPT}"; then
+  echo "[WARN] Initial batch failed. Check logs in ${LOG_DIR}"
+fi
+
+# ==== 9) Crontab: toutes les 2h ====
+echo "[INFO] Installing crontab entry (root)..."
+CRON_LINE='0 */2 * * * /usr/local/bin/quic-client-batch.sh'
+# nettoyer doublons puis ajouter
 ( crontab -l 2>/dev/null | grep -v 'quic-client-batch.sh' || true ) | crontab -
-# Ajouter la nouvelle ligne
-( crontab -l 2>/dev/null; echo "$CRON_LINE" ) | crontab -
+( crontab -l 2>/dev/null; echo "${CRON_LINE}" ) | crontab -
 
-info "Cron job added. You can verify with: crontab -l"
-
-# ----------------------------
-# 6) RÉSUMÉ
-# ----------------------------
-echo -e "\n${GREEN}Installation completed successfully!${NC}"
-echo "------------------------------------------------------"
-echo "Binary:  $(command -v quic-client || echo "$BIN_DIR/quic-client")"
-echo "Batch:   $SCRIPTS_DIR/quic-client-batch.sh"
-echo "Logs:    $LOG_DIR"
-echo "Cron:    $(crontab -l | grep quic-client-batch.sh || echo 'Not found')"
-echo "------------------------------------------------------"
-echo -e "${YELLOW}Next scheduled run will occur within 2 hours.${NC}"
-echo "To view logs later, run: tail -f ~/.quic-client/logs/cron-\$(date -u +%Y%m%d).log"
-
+echo "[INFO] Done."
+echo "  Binary : ${BIN_TARGET}"
+echo "  Batch  : ${BATCH_SCRIPT}"
+echo "  Logs   : ${LOG_DIR}"
+echo "  Cron   : $(crontab -l | grep quic-client-batch.sh || echo 'NOT FOUND')"

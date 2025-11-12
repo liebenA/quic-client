@@ -1,35 +1,43 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ENV_FILE="${ENV_FILE:-$HOME/quic-client/config/client.env}"
-if [[ -f "$ENV_FILE" ]]; then
-  set -a
-  # shellcheck disable=SC1090
-  source "$ENV_FILE"
-  set +a
+# Où écrire les logs
+LOG_DIR="/var/log/quic-client"
+mkdir -p "${LOG_DIR}"
+
+# Fichier de log avec date + heure + minutes (UTC)
+TS="$(date -u +%Y%m%d_%H%M)"
+LOG_FILE="${LOG_DIR}/cron-${TS}.log"
+
+# Capturer toute la sortie
+exec > >(tee -a "${LOG_FILE}") 2>&1
+
+echo "[INFO] $(date -u '+%F %T UTC') - Starting quic-client batch"
+
+# Chemin binaire
+CLIENT_BIN="/usr/local/bin/quic-client"
+if ! command -v "${CLIENT_BIN}" >/dev/null 2>&1; then
+  echo "[ERROR] quic-client not found at ${CLIENT_BIN}"
+  exit 1
 fi
 
-LOG_DIR="$HOME/.quic-client/logs"
-BIN_PATH="$(command -v quic-client || echo "$(go env GOPATH)/bin/quic-client")"
+# Cible et paramètres
+HOST="emes.bj"
+PORT="4447"
 
-mkdir -p "$LOG_DIR"
+set +e  # on continue même si un test échoue, mais on log
+"${CLIENT_BIN}" -u "${HOST}" -p "${PORT}" -n 1  -d 65536
+RC1=$?
+"${CLIENT_BIN}" -u "${HOST}" -p "${PORT}" -n 5  -d 262144
+RC2=$?
+"${CLIENT_BIN}" -u "${HOST}" -p "${PORT}" -n 30 -d 262144
+RC3=$?
+set -e
 
-# Format: cron-YYYYMMDD-HHMM.log (UTC)
-LOG_FILE="$LOG_DIR/cron-$(date -u +%Y%m%d-%H%M).log"
+if [[ $RC1 -ne 0 || $RC2 -ne 0 || $RC3 -ne 0 ]]; then
+  echo "[WARN] One or more tests failed: rc=($RC1,$RC2,$RC3)"
+else
+  echo "[INFO] All tests completed successfully."
+fi
 
-{
-  echo "------------------------------------------------------------"
-  echo "[QUIC CLIENT BATCH] Started at $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
-  echo "Using binary: $BIN_PATH"
-  echo "------------------------------------------------------------"
-
-  # Run tests sequentially
-  "$BIN_PATH" -u emes.bj -p 4447 -n 1  -d 65536
-  "$BIN_PATH" -u emes.bj -p 4447 -n 5  -d 262144
-  "$BIN_PATH" -u emes.bj -p 4447 -n 30 -d 262144
-
-  echo "------------------------------------------------------------"
-  echo "[DONE] Completed at $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
-  echo "------------------------------------------------------------"
-} >> "$LOG_FILE" 2>&1
-
+echo "[INFO] $(date -u '+%F %T UTC') - Batch finished; log: ${LOG_FILE}"
