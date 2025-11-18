@@ -28,11 +28,7 @@ Before installation, make sure your system includes **Git** and **Go**.
 
 ```bash
 sudo apt update
-sudo apt install -y git wget tar
-wget https://go.dev/dl/go1.22.6.linux-amd64.tar.gz
-sudo rm -rf /usr/local/go && sudo tar -C /usr/local -xzf go1.22.6.linux-amd64.tar.gz
-echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.bashrc
-source ~/.bashrc
+sudo apt install -y git wget tar golang-go
 go version
 ```
 
