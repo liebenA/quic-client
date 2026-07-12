@@ -4,7 +4,7 @@ The **QUIC Client** is a lightweight network performance testing tool that estab
 It measures throughput and multi-stream performance under different load conditions, helping assess QUIC reliability and efficiency.
 
 This client can be easily installed on **any Linux distribution** and on **macOS (Intel & Apple Silicon)**.  
-Once installed, it automatically runs performance tests every hours using a scheduled cron job.
+Once installed, it automatically runs performance tests every hour using a scheduled cron job.
 
 ---
 
@@ -35,13 +35,13 @@ This script will:
 
 1. Clone or update the repository from GitHub (`https://github.com/liebenA/quic-client-linux`);
 2. Run installation of `quic-client`;
-3. Set up an automatic task (cron) to repeat the tests every hours.
+3. Set up an automatic task (cron) to repeat the tests every hour.
 
 ---
 
 ## 3. Automated Tests
 
-After installation, and every hours, the following tests are executed sequentially:
+After installation, and every hour, the following tests are executed sequentially:
 
 ```bash
 quic-client -u emes.bj -p 4447 -n 1  -d 65536
